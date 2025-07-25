@@ -47,49 +47,94 @@ async function cleanUsersData() {
       console.log(`   ${row.table_name}: ${row.count} records`);
     });
 
-    // 2. Remove rows with NULL values in critical fields
-    console.log("\n🧹 Removing rows with NULL values in critical fields...");
-    const nullRemovalResult = await client.query(`
-      DELETE FROM users 
+    // 2. Identify users to be deleted (NULL values)
+    console.log("\n🔍 Identifying users with NULL values...");
+    const usersWithNulls = await client.query(`
+      SELECT id FROM users 
       WHERE username IS NULL 
          OR full_name IS NULL
          OR bio IS NULL
          OR address IS NULL
          OR phone_number IS NULL
-      RETURNING id
     `);
-    console.log(`   ✅ Removed ${nullRemovalResult.rowCount} rows with NULL values`);
+    const nullUserIds = usersWithNulls.rows.map(row => row.id);
+    console.log(`   Found ${nullUserIds.length} users with NULL values`);
 
-    // 3. Remove duplicate usernames (keep the one with lowest id)
-    console.log("\n🧹 Removing duplicate usernames...");
-    const duplicateUsernamesResult = await client.query(`
-      DELETE FROM users u1
+    // 3. Identify duplicate usernames (keep the one with lowest id)
+    console.log("\n🔍 Identifying duplicate usernames...");
+    const duplicateUsernames = await client.query(`
+      SELECT u1.id FROM users u1
       WHERE EXISTS (
         SELECT 1 
         FROM users u2 
         WHERE u2.username = u1.username 
         AND u2.id < u1.id
       )
-      RETURNING id
     `);
-    console.log(`   ✅ Removed ${duplicateUsernamesResult.rowCount} duplicate usernames`);
+    const duplicateUsernameIds = duplicateUsernames.rows.map(row => row.id);
+    console.log(`   Found ${duplicateUsernameIds.length} duplicate usernames`);
 
-    // 4. Remove duplicate phone numbers (keep the one with lowest id)
-    console.log("\n🧹 Removing duplicate phone numbers...");
-    const duplicatePhonesResult = await client.query(`
-      DELETE FROM users u1
+    // 4. Identify duplicate phone numbers (keep the one with lowest id)
+    console.log("\n🔍 Identifying duplicate phone numbers...");
+    const duplicatePhones = await client.query(`
+      SELECT u1.id FROM users u1
       WHERE EXISTS (
         SELECT 1 
         FROM users u2 
         WHERE u2.phone_number = u1.phone_number 
         AND u2.id < u1.id
       )
+    `);
+    const duplicatePhoneIds = duplicatePhones.rows.map(row => row.id);
+    console.log(`   Found ${duplicatePhoneIds.length} duplicate phone numbers`);
+
+    // 5. Combine all user IDs to be deleted
+    const allUserIdsToDelete = [...new Set([...nullUserIds, ...duplicateUsernameIds, ...duplicatePhoneIds])];
+    console.log(`\n📋 Total unique users to delete: ${allUserIdsToDelete.length}`);
+
+    if (allUserIdsToDelete.length === 0) {
+      console.log("✅ No users need to be deleted - database is already clean!");
+      await client.query("COMMIT");
+      return;
+    }
+
+    // 6. Delete related records first (to avoid foreign key violations)
+    console.log("\n🧹 Deleting related records for users to be removed...");
+    
+    const userIdsString = allUserIdsToDelete.join(',');
+    
+    const deletedRoles = await client.query(`
+      DELETE FROM user_roles 
+      WHERE user_id IN (${userIdsString})
       RETURNING id
     `);
-    console.log(`   ✅ Removed ${duplicatePhonesResult.rowCount} duplicate phone numbers`);
+    console.log(`   ✅ Deleted ${deletedRoles.rowCount} user_roles records`);
 
-    // 5. Clean up orphaned records in related tables
-    console.log("\n🧹 Cleaning up orphaned records in related tables...");
+    const deletedLogs = await client.query(`
+      DELETE FROM user_logs 
+      WHERE user_id IN (${userIdsString})
+      RETURNING id
+    `);
+    console.log(`   ✅ Deleted ${deletedLogs.rowCount} user_logs records`);
+
+    const deletedDivisions = await client.query(`
+      DELETE FROM user_divisions 
+      WHERE user_id IN (${userIdsString})
+      RETURNING id
+    `);
+    console.log(`   ✅ Deleted ${deletedDivisions.rowCount} user_divisions records`);
+
+    // 7. Now delete the users
+    console.log("\n🧹 Deleting users with NULL values and duplicates...");
+    const deletedUsers = await client.query(`
+      DELETE FROM users 
+      WHERE id IN (${userIdsString})
+      RETURNING id
+    `);
+    console.log(`   ✅ Deleted ${deletedUsers.rowCount} users`);
+
+    // 8. Clean up remaining orphaned records
+    console.log("\n🧹 Cleaning up any remaining orphaned records...");
     
     const orphanedRoles = await client.query(`
       DELETE FROM user_roles 
@@ -140,10 +185,7 @@ async function cleanUsersData() {
     });
 
     // Calculate total removed
-    const totalRemoved = 
-      nullRemovalResult.rowCount + 
-      duplicateUsernamesResult.rowCount + 
-      duplicatePhonesResult.rowCount;
+    const totalRemoved = deletedUsers.rowCount;
 
     console.log(`\n🎉 Cleanup completed successfully!`);
     console.log(`   Total users removed: ${totalRemoved}`);

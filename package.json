@@ -16,6 +16,7 @@
     "db-create-render": "node scripts/create-db-render.js",
     "db-drop": "node scripts/drop-db.js",
     "db-reset": "npm run db-drop && npm run db-create",
+    "db-clean-user": "node scripts/clean-users-data.js",
     "dev-with-metrics": "npm run dev",
     "generate-react-data": "node scripts/generate-consistent-react-data.js",
     "generate-db-metrics": "node scripts/generate-database-metrics.js",
