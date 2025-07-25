@@ -1,0 +1,84 @@
+{
+  "prometheus": {
+    "local_url": "http://localhost:9090",
+    "remote_write_url": "https://prometheus-blocks-prod-us-central1.grafana.net/api/prom/push",
+    "username": "YOUR_GRAFANA_CLOUD_INSTANCE_ID",
+    "password": "YOUR_GRAFANA_CLOUD_API_KEY"
+  },
+  "dashboard": {
+    "title": "Update Profile App Metrics",
+    "description": "Monitoring dashboard for the update profile application"
+  },
+  "instructions": {
+    "setup": [
+      "1. Download Prometheus from https://prometheus.io/download/",
+      "2. Create prometheus.yml with remote_write config",
+      "3. Get Grafana Cloud credentials from Connections → Prometheus → Remote Write",
+      "4. Update the configuration below",
+      "5. Run Prometheus: prometheus.exe --config.file=prometheus.yml"
+    ],
+    "architecture": {
+      "description": "Next.js App → Prometheus Local → Grafana Cloud",
+      "flow": [
+        "Next.js exposes metrics at /api/metrics",
+        "Prometheus scrapes localhost:3000/api/metrics",
+        "Prometheus remote writes to Grafana Cloud",
+        "Grafana Cloud displays metrics in dashboards"
+      ]
+    },
+    "dashboard": {
+      "panels": [
+        {
+          "title": "HTTP Request Rate",
+          "type": "graph",
+          "targets": [
+            {
+              "expr": "rate(http_requests_total[5m])",
+              "legendFormat": "{{method}} {{route}}"
+            }
+          ]
+        },
+        {
+          "title": "HTTP Request Duration",
+          "type": "graph",
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
+              "legendFormat": "95th percentile"
+            }
+          ]
+        },
+        {
+          "title": "Database Query Duration",
+          "type": "graph",
+          "targets": [
+            {
+              "expr": "rate(database_query_duration_seconds_sum[5m]) / rate(database_query_duration_seconds_count[5m])",
+              "legendFormat": "Average duration"
+            }
+          ]
+        },
+        {
+          "title": "Memory Usage",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "process_resident_memory_bytes",
+              "legendFormat": "Memory Usage"
+            }
+          ]
+        },
+        {
+          "title": "CPU Usage",
+          "type": "graph",
+          "targets": [
+            {
+              "expr": "rate(process_cpu_seconds_total[5m]) * 100",
+              "legendFormat": "CPU Usage (%)"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

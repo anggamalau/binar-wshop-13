@@ -1,0 +1,70 @@
+# Prometheus configuration for Next.js app with Grafana Cloud
+# Update the credentials below with your Grafana Cloud details
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093
+
+# Load rules once and periodically evaluate them
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+# Scrape configuration
+scrape_configs:
+  # Self monitoring
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Next.js application metrics
+  - job_name: "nextjs-app"
+    metrics_path: /api/metrics
+    static_configs:
+      - targets: ["localhost:3000"]
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    # Add labels for better organization
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: "(.*)"
+        replacement: "${1}"
+
+# Remote write configuration for Grafana Cloud
+remote_write:
+  - url: https://prometheus-blocks-prod-us-central1.grafana.net/api/prom/push
+    basic_auth:
+      username: YOUR_INSTANCE_ID # Replace with your Grafana Cloud Instance ID
+      password: YOUR_API_KEY # Replace with your Grafana Cloud API Key
+    remote_write_relabel_configs:
+      - source_labels: [__name__]
+        regex: ".*"
+        action: keep
+    # Add retry configuration
+    write_relabel_configs:
+      - source_labels: [__name__]
+        regex: ".*"
+        action: keep
+    # Add timeout configuration
+    timeout: 30s
+    # Add retry configuration
+    retry_on_failure:
+      enabled: true
+      initial_delay: 1s
+      max_delay: 10s
+      max_retries: 3
+# Remote read configuration (optional - for querying historical data)
+# remote_read:
+#   - url: https://prometheus-blocks-prod-us-central1.grafana.net/api/prom/read
+#     basic_auth:
+#       username: YOUR_INSTANCE_ID
+#       password: YOUR_API_KEY
+#     read_recent: true
