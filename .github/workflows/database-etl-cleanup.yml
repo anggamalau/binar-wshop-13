@@ -1,0 +1,237 @@
+name: Database ETL - Data Cleanup
+
+on:
+  # Run daily at 2 AM UTC
+  schedule:
+    - cron: '0 2 * * *'
+  
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run in dry-run mode (show what would be deleted without deleting)'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  database-cleanup:
+    runs-on: ubuntu-latest
+    
+    environment: production
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Create .env.local file
+      run: |
+        cat > .env.local << EOF
+        DB_USER=${{ secrets.DB_USER }}
+        DB_HOST=${{ secrets.DB_HOST }}
+        DB_NAME=${{ secrets.DB_NAME }}
+        DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+        DB_PORT=${{ secrets.DB_PORT }}
+        JWT_SECRET=${{ secrets.JWT_SECRET }}
+        EOF
+
+    - name: Test database connection
+      run: |
+        node -e "
+        const { Pool } = require('pg');
+        require('dotenv').config({ path: '.env.local' });
+        
+        const pool = new Pool({
+          user: process.env.DB_USER,
+          host: process.env.DB_HOST,
+          database: process.env.DB_NAME,
+          password: process.env.DB_PASSWORD,
+          port: parseInt(process.env.DB_PORT),
+          ssl: process.env.DB_HOST !== 'localhost' ? { rejectUnauthorized: false } : false
+        });
+        
+        (async () => {
+          try {
+            const client = await pool.connect();
+            await client.query('SELECT NOW()');
+            client.release();
+            console.log('✅ Database connection successful');
+            await pool.end();
+          } catch (error) {
+            console.error('❌ Database connection failed:', error.message);
+            process.exit(1);
+          }
+        })();
+        "
+
+    - name: Run database cleanup (dry-run check)
+      if: ${{ github.event.inputs.dry_run == 'true' }}
+      run: |
+        node -e "
+        const { Pool } = require('pg');
+        require('dotenv').config({ path: '.env.local' });
+        
+        const pool = new Pool({
+          user: process.env.DB_USER,
+          host: process.env.DB_HOST,
+          database: process.env.DB_NAME,
+          password: process.env.DB_PASSWORD,
+          port: parseInt(process.env.DB_PORT),
+          ssl: process.env.DB_HOST !== 'localhost' ? { rejectUnauthorized: false } : false
+        });
+        
+        (async () => {
+          const client = await pool.connect();
+          try {
+            console.log('🔍 DRY RUN - Checking what would be cleaned...');
+            
+            const usersWithNulls = await client.query(\`
+              SELECT id, username, full_name FROM users 
+              WHERE username IS NULL OR full_name IS NULL OR bio IS NULL OR address IS NULL OR phone_number IS NULL
+              LIMIT 10
+            \`);
+            console.log(\`Found \${usersWithNulls.rowCount} users with NULL values\`);
+            
+            const duplicateUsernames = await client.query(\`
+              SELECT u1.id, u1.username FROM users u1
+              WHERE EXISTS (SELECT 1 FROM users u2 WHERE u2.username = u1.username AND u2.id < u1.id)
+              LIMIT 10
+            \`);
+            console.log(\`Found \${duplicateUsernames.rowCount} duplicate usernames\`);
+            
+            const duplicatePhones = await client.query(\`
+              SELECT u1.id, u1.phone_number FROM users u1
+              WHERE EXISTS (SELECT 1 FROM users u2 WHERE u2.phone_number = u1.phone_number AND u2.id < u1.id)
+              LIMIT 10
+            \`);
+            console.log(\`Found \${duplicatePhones.rowCount} duplicate phone numbers\`);
+            
+            console.log('✅ Dry run completed - no changes made');
+          } finally {
+            client.release();
+            await pool.end();
+          }
+        })();
+        "
+
+    - name: Run database cleanup
+      if: ${{ github.event.inputs.dry_run != 'true' }}
+      run: npm run db-clean-user
+
+    - name: Verify database integrity
+      run: |
+        node -e "
+        const { Pool } = require('pg');
+        require('dotenv').config({ path: '.env.local' });
+        
+        const pool = new Pool({
+          user: process.env.DB_USER,
+          host: process.env.DB_HOST,
+          database: process.env.DB_NAME,
+          password: process.env.DB_PASSWORD,
+          port: parseInt(process.env.DB_PORT),
+          ssl: process.env.DB_HOST !== 'localhost' ? { rejectUnauthorized: false } : false
+        });
+        
+        (async () => {
+          const client = await pool.connect();
+          try {
+            console.log('🔍 Verifying database integrity...');
+            
+            // Check for orphaned records
+            const orphanedRoles = await client.query('SELECT COUNT(*) FROM user_roles WHERE user_id NOT IN (SELECT id FROM users)');
+            const orphanedLogs = await client.query('SELECT COUNT(*) FROM user_logs WHERE user_id NOT IN (SELECT id FROM users)');
+            const orphanedDivisions = await client.query('SELECT COUNT(*) FROM user_divisions WHERE user_id NOT IN (SELECT id FROM users)');
+            const orphanedAuth = await client.query('SELECT COUNT(*) FROM auth WHERE id NOT IN (SELECT auth_id FROM users WHERE auth_id IS NOT NULL)');
+            
+            console.log(\`Orphaned user_roles: \${orphanedRoles.rows[0].count}\`);
+            console.log(\`Orphaned user_logs: \${orphanedLogs.rows[0].count}\`);
+            console.log(\`Orphaned user_divisions: \${orphanedDivisions.rows[0].count}\`);
+            console.log(\`Orphaned auth records: \${orphanedAuth.rows[0].count}\`);
+            
+            const totalOrphaned = parseInt(orphanedRoles.rows[0].count) + 
+                                 parseInt(orphanedLogs.rows[0].count) + 
+                                 parseInt(orphanedDivisions.rows[0].count) + 
+                                 parseInt(orphanedAuth.rows[0].count);
+            
+            if (totalOrphaned > 0) {
+              console.error(\`❌ Found \${totalOrphaned} orphaned records!\`);
+              process.exit(1);
+            } else {
+              console.log('✅ Database integrity verified - no orphaned records found');
+            }
+          } finally {
+            client.release();
+            await pool.end();
+          }
+        })();
+        "
+
+    - name: Generate cleanup report
+      if: ${{ github.event.inputs.dry_run != 'true' }}
+      run: |
+        node -e "
+        const { Pool } = require('pg');
+        require('dotenv').config({ path: '.env.local' });
+        
+        const pool = new Pool({
+          user: process.env.DB_USER,
+          host: process.env.DB_HOST,
+          database: process.env.DB_NAME,
+          password: process.env.DB_PASSWORD,
+          port: parseInt(process.env.DB_PORT),
+          ssl: process.env.DB_HOST !== 'localhost' ? { rejectUnauthorized: false } : false
+        });
+        
+        (async () => {
+          const client = await pool.connect();
+          try {
+            const counts = await client.query(\`
+              SELECT 'users' as table_name, COUNT(*) as count FROM users
+              UNION ALL SELECT 'auth', COUNT(*) FROM auth
+              UNION ALL SELECT 'user_roles', COUNT(*) FROM user_roles
+              UNION ALL SELECT 'user_logs', COUNT(*) FROM user_logs
+              UNION ALL SELECT 'user_divisions', COUNT(*) FROM user_divisions
+            \`);
+            
+            console.log('📊 Final database statistics:');
+            counts.rows.forEach(row => {
+              console.log(\`   \${row.table_name}: \${row.count} records\`);
+            });
+            
+            // Save report to file for potential artifact upload
+            const fs = require('fs');
+            const report = {
+              timestamp: new Date().toISOString(),
+              final_counts: counts.rows,
+              status: 'completed'
+            };
+            fs.writeFileSync('cleanup-report.json', JSON.stringify(report, null, 2));
+            console.log('📁 Cleanup report saved to cleanup-report.json');
+          } finally {
+            client.release();
+            await pool.end();
+          }
+        })();
+        "
+
+    - name: Upload cleanup report
+      if: ${{ github.event.inputs.dry_run != 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: database-cleanup-report-${{ github.run_number }}
+        path: cleanup-report.json
+        retention-days: 30
+
+    - name: Cleanup .env.local
+      if: always()
+      run: rm -f .env.local
